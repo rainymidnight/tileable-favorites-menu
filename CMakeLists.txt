@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(TileableFavoritesMenu VERSION 1.0.0.0 LANGUAGES CXX)
+project(TileableFavoritesMenu VERSION 1.0.1.0 LANGUAGES CXX)
 
 set(OUTPUT_FOLDER "" CACHE PATH "Optional Skyrim Data folder or mod-manager mod root")
 
