@@ -594,7 +594,7 @@ namespace TFM::IconLayer
                 menuFlags.set(
                     RE::UI_MENU_FLAGS::kRequiresUpdate,
                     RE::UI_MENU_FLAGS::kTopmostRenderedMenu,
-                    RE::UI_MENU_FLAGS::kUsesCursor,
+                    RE::UI_MENU_FLAGS::kUpdateUsesCursor,
                     RE::UI_MENU_FLAGS::kAdvancesUnderPauseMenu,
                     RE::UI_MENU_FLAGS::kRendersUnderPauseMenu);
 

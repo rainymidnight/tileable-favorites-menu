@@ -30,13 +30,17 @@ namespace TFM::UI
             DropPosition position{ DropPosition::kCenter };
             ImGui::ImVec2 pressPosition{};
             ImGui::ImVec2 grabOffset{};
+            ImGui::ImVec2 pointerPosition{};
             bool active{ false };
+            bool controller{ false };
+            bool dropRequested{ false };
         };
         DragState dragState{};
         std::unordered_map<ItemKey, Rect, ItemKeyHash> animatedRects;
         bool favoritesButtonDown = false;
         bool registered = false;
         bool nativeBlurActive = false;
+        bool controllerInputActive = false;
         bool centerCursorOnNextFrame = false;
         std::uint8_t scaleformCursorRequestCooldown = 0;
         std::atomic_bool replacementAvailable{ false };
@@ -52,6 +56,8 @@ namespace TFM::UI
         float refreshTimer = 0.0f;
         constexpr std::uint8_t kPostActivationRefreshFrames = 12;
         constexpr float kDragThreshold = 10.0f;
+        constexpr float kControllerDragDeadzone = 0.2f;
+        constexpr float kControllerDragSpeed = 0.75f;
         constexpr float kDropCenterInset = 0.18f;
         constexpr float kLayoutAnimationSpeed = 18.0f;
         constexpr float kItemLabelHorizontalPadding = 12.0f;
@@ -85,6 +91,8 @@ namespace TFM::UI
 
         constexpr ImGui::ImU32 kText = IM_COL32(236, 236, 236, 255);
         constexpr ImGui::ImU32 kHotkeyBackground = IM_COL32(12, 14, 18, 210);
+        constexpr ImGui::ImU32 kFocusOutline = IM_COL32(238, 232, 214, 255);
+        constexpr float kFocusOutlineThickness = 3.0f;
 
         [[nodiscard]] ImGui::ImVec2 Min(const Rect& rect) { return { rect.x, rect.y }; }
         [[nodiscard]] ImGui::ImVec2 Max(const Rect& rect) { return { rect.Right(), rect.Bottom() }; }
@@ -276,6 +284,7 @@ namespace TFM::UI
             Rect preview{};
             ItemLabelLayout label{};
             bool hovered{ false };
+            bool focused{ false };
             bool dropTarget{ false };
         };
 
@@ -435,16 +444,16 @@ namespace TFM::UI
 
         [[nodiscard]] std::optional<Direction> PressedGamepadDirection()
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, true)) {
                 return Direction::kLeft;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, true)) {
                 return Direction::kRight;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp, true)) {
                 return Direction::kUp;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown, true)) {
                 return Direction::kDown;
             }
             return std::nullopt;
@@ -551,16 +560,18 @@ namespace TFM::UI
                 kMaximumGhostWidth / std::max(1.0f, dragState.sourceRect.width),
                 kMaximumGhostHeight / std::max(1.0f, dragState.sourceRect.height)
             });
-            const auto mouse = ImGui::GetIO()->MousePos;
             return Rect{
-                mouse.x - dragState.grabOffset.x * scale,
-                mouse.y - dragState.grabOffset.y * scale,
+                dragState.pointerPosition.x - dragState.grabOffset.x * scale,
+                dragState.pointerPosition.y - dragState.grabOffset.y * scale,
                 dragState.sourceRect.width * scale,
                 dragState.sourceRect.height * scale
             };
         }
 
-        [[nodiscard]] RenderScene BuildRenderScene(const std::vector<LeafRect>& leaves, bool trackHover)
+        [[nodiscard]] RenderScene BuildRenderScene(
+            const std::vector<LeafRect>& leaves,
+            bool trackHover,
+            bool showFocus)
         {
             RenderScene scene;
             scene.tiles.reserve(leaves.size());
@@ -576,6 +587,7 @@ namespace TFM::UI
                     .preview = preview,
                     .label = CalculateItemLabelLayout(*item, leaf.rect, preview),
                     .hovered = trackHover && ImGui::IsMouseHoveringRect(Min(leaf.rect), Max(leaf.rect), true),
+                    .focused = showFocus && leaf.item == focusedItem,
                     .dropTarget = dragState.active && dragState.target == leaf.item
                 });
             }
@@ -616,7 +628,7 @@ namespace TFM::UI
                     .key = tile.leaf.item,
                     .bounds = tile.leaf.rect,
                     .preview = tile.preview,
-                    .hovered = tile.hovered,
+                    .hovered = tile.hovered || tile.focused,
                     .dropTarget = tile.dropTarget,
                     .equipState = tile.item.equipState,
                     .equipIndicator = tile.label.equipIndicator
@@ -678,16 +690,72 @@ namespace TFM::UI
             postActivationRefreshFrames = kPostActivationRefreshFrames;
         }
 
+        void StartControllerDrag(const std::vector<LeafRect>& leaves)
+        {
+            if (leaves.size() < 2 || dragState.source.IsValid()) {
+                return;
+            }
+            const auto source = FindLeaf(leaves, focusedItem);
+            if (!source) {
+                return;
+            }
+
+            dragState.source = focusedItem;
+            dragState.sourceRect = source->rect;
+            dragState.grabOffset = {
+                source->rect.width * 0.5f,
+                source->rect.height * 0.5f
+            };
+            dragState.pointerPosition = {
+                source->rect.CenterX(),
+                source->rect.CenterY()
+            };
+            dragState.active = true;
+            dragState.controller = true;
+        }
+
+        void UpdateControllerDragPointer()
+        {
+            auto stick = ImGui::GetKeyMagnitude2d(
+                ImGuiKey_GamepadLStickLeft,
+                ImGuiKey_GamepadLStickRight,
+                ImGuiKey_GamepadLStickUp,
+                ImGuiKey_GamepadLStickDown);
+            const auto magnitude = std::sqrt(stick.x * stick.x + stick.y * stick.y);
+            if (magnitude > kControllerDragDeadzone) {
+                const auto normalizedMagnitude = std::clamp(
+                    (magnitude - kControllerDragDeadzone) / (1.0f - kControllerDragDeadzone),
+                    0.0f,
+                    1.0f);
+                const auto scale = normalizedMagnitude / magnitude;
+                stick.x *= scale;
+                stick.y *= scale;
+
+                const auto screen = ImGui::GetIO()->DisplaySize;
+                const auto deltaTime = std::clamp(ImGui::GetIO()->DeltaTime, 0.0f, 0.05f);
+                const auto speed = std::max(screen.x, screen.y) * kControllerDragSpeed;
+                dragState.pointerPosition.x += stick.x * speed * deltaTime;
+                dragState.pointerPosition.y += stick.y * speed * deltaTime;
+                dragState.pointerPosition.x = std::clamp(dragState.pointerPosition.x, 0.0f, screen.x);
+                dragState.pointerPosition.y = std::clamp(dragState.pointerPosition.y, 0.0f, screen.y);
+            }
+        }
+
         [[nodiscard]] bool UpdateDrag(const std::vector<LeafRect>& leaves)
         {
             if (!dragState.source.IsValid()) {
                 return false;
             }
 
-            const auto mouse = ImGui::GetIO()->MousePos;
-            if (!dragState.active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                const auto dx = mouse.x - dragState.pressPosition.x;
-                const auto dy = mouse.y - dragState.pressPosition.y;
+            if (dragState.controller) {
+                UpdateControllerDragPointer();
+            } else {
+                dragState.pointerPosition = ImGui::GetIO()->MousePos;
+            }
+            const auto pointer = dragState.pointerPosition;
+            if (!dragState.controller && !dragState.active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const auto dx = pointer.x - dragState.pressPosition.x;
+                const auto dy = pointer.y - dragState.pressPosition.y;
                 dragState.active = dx * dx + dy * dy >= kDragThreshold * kDragThreshold;
             }
 
@@ -696,13 +764,28 @@ namespace TFM::UI
             dragState.position = DropPosition::kCenter;
             if (dragState.active) {
                 for (const auto& leaf : leaves) {
-                    if (leaf.item != dragState.source && Contains(leaf.rect, mouse)) {
+                    if (leaf.item != dragState.source && Contains(leaf.rect, pointer)) {
                         dragState.target = leaf.item;
                         dragState.targetRect = leaf.rect;
-                        dragState.position = DropPositionFor(leaf.rect, mouse);
+                        dragState.position = DropPositionFor(leaf.rect, pointer);
                         break;
                     }
                 }
+            }
+
+            if (dragState.controller) {
+                if (!std::exchange(dragState.dropRequested, false) || !dragState.target.IsValid()) {
+                    return false;
+                }
+                const auto source = dragState.source;
+                const auto target = dragState.target;
+                const auto position = dragState.position;
+                if (!Layout::GetSingleton().ApplyDrop({ source, target, position })) {
+                    return false;
+                }
+                focusedItem = source;
+                dragState = {};
+                return true;
             }
 
             if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -731,6 +814,18 @@ namespace TFM::UI
                 Close();
                 return;
             }
+            const auto dragButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+            const auto confirmButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
+            if (dragState.controller) {
+                if (dragButtonPressed || confirmButtonPressed) {
+                    dragState.dropRequested = true;
+                }
+                return;
+            }
+            if (controllerInputActive && dragButtonPressed) {
+                StartControllerDrag(leaves);
+                return;
+            }
             if (const auto direction = PressedGamepadDirection()) {
                 const auto neighbor = FindNeighbor(leaves, focusedItem, *direction);
                 if (neighbor.IsValid()) {
@@ -738,7 +833,7 @@ namespace TFM::UI
                 }
             }
 
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
+            if (confirmButtonPressed) {
                 Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kRight);
             }
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false)) {
@@ -808,6 +903,16 @@ namespace TFM::UI
                 kText,
                 tile.label.text);
             DrawHotkeyIndicator(drawList, item.hotkey, tile.label.hotkeyIndicator);
+            if (tile.focused) {
+                ImGui::ImDrawListManager::AddRect(
+                    drawList,
+                    Min(tile.leaf.rect),
+                    Max(tile.leaf.rect),
+                    kFocusOutline,
+                    Theme::kCornerRadius,
+                    0,
+                    kFocusOutlineThickness);
+            }
 
             const auto dragSource = dragState.active && dragState.source == item.key;
             if (dragSource) {
@@ -830,6 +935,7 @@ namespace TFM::UI
                 dragState.source = item.key;
                 dragState.sourceRect = tile.leaf.rect;
                 dragState.pressPosition = ImGui::GetIO()->MousePos;
+                dragState.pointerPosition = dragState.pressPosition;
                 dragState.grabOffset = {
                     dragState.pressPosition.x - tile.leaf.rect.x,
                     dragState.pressPosition.y - tile.leaf.rect.y
@@ -877,6 +983,37 @@ namespace TFM::UI
             }
         }
 
+        [[nodiscard]] bool IsControllerActive()
+        {
+            const auto inputManager = RE::BSInputDeviceManager::GetSingleton();
+            return inputManager && inputManager->IsGamepadEnabled();
+        }
+
+        void HideScaleformCursor()
+        {
+            scaleformCursorRequestCooldown = 0;
+            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
+                queue->AddMessage(RE::CursorMenu::MENU_NAME.data(), RE::UI_MESSAGE_TYPE::kHide, nullptr);
+            }
+        }
+
+        void UpdateControllerInputMode()
+        {
+            const auto active = IsControllerActive();
+            if (active == controllerInputActive) {
+                return;
+            }
+
+            controllerInputActive = active;
+            if (active) {
+                centerCursorOnNextFrame = false;
+                HideScaleformCursor();
+            } else {
+                scaleformCursorRequestCooldown = 0;
+                centerCursorOnNextFrame = true;
+            }
+        }
+
         [[nodiscard]] bool SynchronizeScaleformCursor()
         {
             const auto ui = RE::UI::GetSingleton();
@@ -910,20 +1047,13 @@ namespace TFM::UI
             return false;
         }
 
-        void HideScaleformCursor()
-        {
-            scaleformCursorRequestCooldown = 0;
-            if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
-                queue->AddMessage(RE::CursorMenu::MENU_NAME.data(), RE::UI_MESSAGE_TYPE::kHide, nullptr);
-            }
-        }
-
         void __stdcall Render()
         {
             if (!window || !window->IsOpen) {
                 return;
             }
 
+            UpdateControllerInputMode();
             const bool equipEventReceived = equipmentStateChanged.exchange(false, std::memory_order_acq_rel);
             const bool postActivationRefresh = postActivationRefreshFrames > 0;
             if (postActivationRefresh) {
@@ -946,11 +1076,11 @@ namespace TFM::UI
             auto& previewCache = PreviewCache::GetSingleton();
 
             const auto screen = ImGui::GetIO()->DisplaySize;
-            if (centerCursorOnNextFrame) {
+            if (!controllerInputActive && centerCursorOnNextFrame) {
                 centerCursorOnNextFrame = false;
                 ImGui::TeleportMousePos({ screen.x * 0.5f, screen.y * 0.5f });
             }
-            if (SynchronizeScaleformCursor()) {
+            if (controllerInputActive || SynchronizeScaleformCursor()) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_None);
             }
             const auto& settings = Config::Get();
@@ -973,7 +1103,7 @@ namespace TFM::UI
                 return;
             }
             if (presentationState != IconLayer::PresentationState::kReady) {
-                renderScene = BuildRenderScene(leaves, false);
+                renderScene = BuildRenderScene(leaves, false, controllerInputActive);
                 SubmitScaleformLayout(screen, *renderScene, settings);
                 layoutSubmitted = true;
                 presentationState = IconLayer::GetPresentationState();
@@ -1022,7 +1152,7 @@ namespace TFM::UI
                         const auto preview = PreviewLayout(leaves, bounds, settings.gap);
                         const auto animated = AnimateLayout(preview);
                         inputHotkeyTarget.store(PackItemKey(HotkeyTarget(animated)), std::memory_order_release);
-                        renderScene = BuildRenderScene(animated, true);
+                        renderScene = BuildRenderScene(animated, true, controllerInputActive);
                     }
                     if (!layoutSubmitted) {
                         SubmitScaleformLayout(screen, *renderScene, settings);
@@ -1186,7 +1316,8 @@ namespace TFM::UI
         const auto wasOpen = window->IsOpen.load();
         if (!wasOpen) {
             ResetLayoutAnimation();
-            centerCursorOnNextFrame = true;
+            controllerInputActive = IsControllerActive();
+            centerCursorOnNextFrame = !controllerInputActive;
             scaleformCursorRequestCooldown = 0;
         }
         PreviewCache::GetSingleton().SetVisible(Config::Get().previewMode == Config::PreviewMode::kMeshes);
@@ -1209,6 +1340,9 @@ namespace TFM::UI
         refreshTimer = 0.0f;
         window->IsOpen = true;
         if (!wasOpen) {
+            if (controllerInputActive) {
+                HideScaleformCursor();
+            }
             SetNativeBlur(true);
         }
     }
