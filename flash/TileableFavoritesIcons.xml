@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Scaleform host for Tileable Favorites Menu.
+-->
+<swf _xmlExportMajor="2" _xmlExportMinor="1" _generator="JPEXS Free Flash Decompiler v.26.0.0" type="SWF" charset="UTF-8" compression="ZLIB" encrypted="false" frameCount="1" frameRate="60.0" gfx="false" hasEndTag="true" version="10">
+  <displayRect type="RECT" Xmax="25600" Xmin="0" Ymax="14400" Ymin="0" nbits="16"/>
+  <tags>
+    <item type="FileAttributesTag" actionScript3="false" forceWriteAsLong="false" hasMetadata="false" noCrossDomainCache="false" reservedA="false" reservedB="0" swfRelativeUrls="false" useDirectBlit="false" useGPU="false" useNetwork="false"/>
+    <item type="SetBackgroundColorTag" forceWriteAsLong="false">
+      <backgroundColor type="RGB" blue="0" green="0" red="0"/>
+    </item>
+    <item type="ShowFrameTag" forceWriteAsLong="false"/>
+    <item type="EndTag" forceWriteAsLong="false"/>
+  </tags>
+</swf>

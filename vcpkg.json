@@ -1,0 +1,17 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+    "name": "tileable-favorites-menu",
+    "version-string": "1.0.0",
+    "dependencies": [
+        "directxtk",
+        "nlohmann-json",
+        "rapidcsv",
+        "spdlog"
+    ],
+    "overrides": [
+        {
+            "name": "fmt",
+            "version": "12.1.0"
+        }
+    ]
+}
