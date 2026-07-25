@@ -810,7 +810,9 @@ namespace TFM::UI
 
         void HandleMenuInput(const std::vector<LeafRect>& leaves)
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Tab, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
                 Close();
                 return;
             }
