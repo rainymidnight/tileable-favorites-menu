@@ -1,4 +1,5 @@
 #include "Actions.h"
+#include "InventoryIdentity.h"
 
 namespace TFM::Actions
 {
@@ -7,11 +8,7 @@ namespace TFM::Actions
         struct InventoryMatch
         {
             RE::TESBoundObject* object{ nullptr };
-            RE::ExtraDataList* extraList{ nullptr };
-            std::int32_t count{ 0 };
-            bool worn{ false };
-            bool wornLeft{ false };
-            bool wornRight{ false };
+            InventoryIdentity::Match instances;
         };
 
         [[nodiscard]] RE::BGSEquipSlot* LeftHandSlot()
@@ -56,53 +53,21 @@ namespace TFM::Actions
             function(std::addressof(manager), std::addressof(player), std::addressof(shout));
         }
 
-        [[nodiscard]] bool MatchesUniqueID(const RE::ExtraDataList& list, std::uint16_t uniqueID)
-        {
-            const auto unique = list.GetByType<RE::ExtraUniqueID>();
-            return uniqueID == 0 ? unique == nullptr : unique && unique->uniqueID == uniqueID;
-        }
-
         [[nodiscard]] InventoryMatch FindInventoryMatch(
-            RE::TESObjectREFR::InventoryItemMap& inventory,
+            RE::PlayerCharacter& player,
             const ItemKey& key)
         {
+            auto inventory = player.GetInventory();
             for (auto& [object, data] : inventory) {
                 if (!object || object->GetFormID() != key.formID || data.first <= 0 || !data.second) {
                     continue;
                 }
 
-                InventoryMatch match{
-                    object,
-                    nullptr,
-                    data.first,
-                    data.second->IsWorn(),
-                    data.second->IsWorn(true),
-                    data.second->IsWorn(false) };
-                if (!data.second->extraLists) {
-                    return key.uniqueID == 0 ? match : InventoryMatch{};
+                auto instances = InventoryIdentity::Inspect(*data.second, data.first, key);
+                if (instances.count <= 0) {
+                    return {};
                 }
-
-                RE::ExtraDataList* firstFavorite = nullptr;
-                for (auto list : *data.second->extraLists) {
-                    if (!list) {
-                        continue;
-                    }
-                    if (!firstFavorite && list->HasType<RE::ExtraHotkey>()) {
-                        firstFavorite = list;
-                    }
-                    if (MatchesUniqueID(*list, key.uniqueID) && list->HasType<RE::ExtraHotkey>()) {
-                        match.extraList = list;
-                        match.count = std::max(1, list->GetCount());
-                        match.wornLeft = list->HasType<RE::ExtraWornLeft>();
-                        match.wornRight = list->HasType<RE::ExtraWorn>();
-                        match.worn = match.wornLeft || match.wornRight;
-                        return match;
-                    }
-                }
-                if (key.uniqueID == 0) {
-                    match.extraList = firstFavorite;
-                    return match;
-                }
+                return { object, instances };
             }
             return {};
         }
@@ -228,24 +193,34 @@ namespace TFM::Actions
                 return false;
             }
 
-            auto inventory = player.GetInventory();
-            auto match = FindInventoryMatch(inventory, item.key);
-            if (!match.object || match.count <= 0) {
+            auto match = FindInventoryMatch(player, item.key);
+            if (!match.object || match.instances.count <= 0) {
                 return false;
             }
 
             const auto formType = match.object->GetFormType();
             if (formType == RE::FormType::AlchemyItem || formType == RE::FormType::Ingredient) {
-                EquipPhysicalFavorite(*manager, player, *match.object, match.extraList);
+                EquipPhysicalFavorite(
+                    *manager,
+                    player,
+                    *match.object,
+                    match.instances.equipExtraList);
                 RefreshPhysicalEquipment(player);
                 return true;
             }
 
             if (formType == RE::FormType::Armor || formType == RE::FormType::Light || formType == RE::FormType::Ammo) {
-                if (match.worn) {
-                    UnequipPhysicalFavorite(*manager, player, *match.object, match.extraList);
+                const auto wornExtraList = match.instances.wornRightExtraList ?
+                    match.instances.wornRightExtraList :
+                    match.instances.wornLeftExtraList;
+                if (wornExtraList) {
+                    UnequipPhysicalFavorite(*manager, player, *match.object, wornExtraList);
                 } else {
-                    EquipPhysicalFavorite(*manager, player, *match.object, match.extraList);
+                    EquipPhysicalFavorite(
+                        *manager,
+                        player,
+                        *match.object,
+                        match.instances.equipExtraList);
                 }
                 RefreshPhysicalEquipment(player);
                 return true;
@@ -257,21 +232,42 @@ namespace TFM::Actions
             }
             const auto slot = left ? LeftHandSlot() : RightHandSlot();
             const auto oppositeSlot = left ? RightHandSlot() : LeftHandSlot();
-            const auto equipped = player.GetEquippedObject(left);
-            const auto oppositeEquipped = player.GetEquippedObject(!left);
-            const bool selectedInstanceEquipped = match.extraList ?
-                (left ? match.wornLeft : match.wornRight) :
-                (equipped && equipped->GetFormID() == match.object->GetFormID());
-            const bool selectedInstanceInOppositeHand = match.extraList ?
-                (left ? match.wornRight : match.wornLeft) :
-                (match.count == 1 && oppositeEquipped && oppositeEquipped->GetFormID() == match.object->GetFormID());
-            if (selectedInstanceEquipped) {
-                UnequipPhysicalFavorite(*manager, player, *match.object, match.extraList, slot);
+            const auto equippedCount =
+                static_cast<std::int32_t>(match.instances.wornLeftExtraList != nullptr) +
+                static_cast<std::int32_t>(match.instances.wornRightExtraList != nullptr);
+            const bool hasUnequippedCopy =
+                match.instances.count > equippedCount;
+
+            if (const auto wornExtraList = left ?
+                    match.instances.wornLeftExtraList :
+                    match.instances.wornRightExtraList;
+                wornExtraList) {
+                UnequipPhysicalFavorite(*manager, player, *match.object, wornExtraList, slot);
             } else {
-                if (selectedInstanceInOppositeHand) {
-                    UnequipPhysicalFavorite(*manager, player, *match.object, match.extraList, oppositeSlot);
+                if (const auto oppositeExtraList = left ?
+                        match.instances.wornRightExtraList :
+                        match.instances.wornLeftExtraList;
+                    oppositeExtraList && !hasUnequippedCopy) {
+                    UnequipPhysicalFavorite(
+                        *manager,
+                        player,
+                        *match.object,
+                        oppositeExtraList,
+                        oppositeSlot);
+
+                    // UnequipObject may rebuild ExtraDataLists, so reacquire before equip.
+                    match = FindInventoryMatch(player, item.key);
+                    if (!match.object || match.instances.count <= 0) {
+                        RefreshPhysicalEquipment(player);
+                        return true;
+                    }
                 }
-                EquipPhysicalFavorite(*manager, player, *match.object, match.extraList, slot);
+                EquipPhysicalFavorite(
+                    *manager,
+                    player,
+                    *match.object,
+                    match.instances.equipExtraList,
+                    slot);
             }
             RefreshPhysicalEquipment(player);
             return true;

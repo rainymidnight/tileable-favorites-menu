@@ -1,4 +1,5 @@
 #include "Favorites.h"
+#include "InventoryIdentity.h"
 
 namespace TFM
 {
@@ -114,15 +115,10 @@ namespace TFM
         [[nodiscard]] EquipState InventoryEquipState(
             RE::PlayerCharacter& player,
             RE::TESForm& form,
-            const RE::InventoryEntryData& entry,
-            const RE::ExtraDataList* extraList = nullptr)
+            const InventoryIdentity::Match& instances)
         {
-            const bool wornLeft = extraList ?
-                extraList->HasType<RE::ExtraWornLeft>() :
-                entry.IsWorn(true);
-            const bool wornRight = extraList ?
-                extraList->HasType<RE::ExtraWorn>() :
-                entry.IsWorn(false);
+            const bool wornLeft = instances.wornLeftExtraList != nullptr;
+            const bool wornRight = instances.wornRightExtraList != nullptr;
             if (!wornLeft && !wornRight) {
                 return EquipState::kNone;
             }
@@ -250,9 +246,10 @@ namespace TFM
                         favorite.boundObject = object;
                         favorite.name = name && name[0] != '\0' ? name : FormName(*object);
                         favorite.category = CategoryFor(*object);
-                        favorite.count = std::max(1, extraList->GetCount());
+                        const auto instances = InventoryIdentity::Inspect(*entry, data.first, key);
+                        favorite.count = std::max(1, instances.count);
                         favorite.hotkey = HotkeyNumber(*extraList);
-                        favorite.equipState = InventoryEquipState(player, *object, *entry, extraList);
+                        favorite.equipState = InventoryEquipState(player, *object, instances);
                         result.push_back(std::move(favorite));
                     }
                 }
@@ -260,6 +257,7 @@ namespace TFM
                 if (!foundFavoriteList) {
                     const ItemKey key{ object->GetFormID(), 0 };
                     if (seen.insert(key).second) {
+                        const auto instances = InventoryIdentity::Inspect(*entry, data.first, key);
                         result.push_back({
                             key,
                             object,
@@ -268,7 +266,7 @@ namespace TFM
                             CategoryFor(*object),
                             data.first,
                             -1,
-                            InventoryEquipState(player, *object, *entry) });
+                            InventoryEquipState(player, *object, instances) });
                     }
                 }
             }
