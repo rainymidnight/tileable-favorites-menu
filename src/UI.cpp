@@ -48,6 +48,11 @@ namespace TFM::UI
         std::atomic_uint64_t inputHotkeyTarget{ 0 };
         std::atomic_uint64_t pendingHotkeyTarget{ 0 };
         std::atomic_int pendingHotkey{ 0 };
+        std::atomic<float> controllerStickX{ 0.0f };
+        std::atomic<float> controllerStickY{ 0.0f };
+        std::atomic_bool pendingControllerDragPress{ false };
+        std::optional<Direction> repeatedControllerDirection;
+        float controllerDirectionRepeatTimer = 0.0f;
         bool initialMeshRevealComplete = false;
         bool incrementalMeshRevealAllowed = false;
         bool meshPrewarmReady = false;
@@ -58,6 +63,9 @@ namespace TFM::UI
         constexpr float kDragThreshold = 10.0f;
         constexpr float kControllerDragDeadzone = 0.2f;
         constexpr float kControllerDragSpeed = 0.75f;
+        constexpr float kControllerNavigationDeadzone = 0.5f;
+        constexpr float kControllerNavigationInitialRepeatDelay = 0.3f;
+        constexpr float kControllerNavigationRepeatInterval = 0.1f;
         constexpr float kDropCenterInset = 0.18f;
         constexpr float kLayoutAnimationSpeed = 18.0f;
         constexpr float kItemLabelHorizontalPadding = 12.0f;
@@ -65,6 +73,16 @@ namespace TFM::UI
         constexpr float kDefaultHotkeyIndicatorSize = 26.0f;
         constexpr float kDefaultItemIndicatorGap = 6.0f;
         constexpr std::uint8_t kScaleformCursorRetryFrames = 30;
+
+        void ResetControllerInput()
+        {
+            controllerStickX.store(0.0f, std::memory_order_release);
+            controllerStickY.store(0.0f, std::memory_order_release);
+            pendingControllerDragPress.store(false, std::memory_order_release);
+            repeatedControllerDirection.reset();
+            controllerDirectionRepeatTimer = 0.0f;
+        }
+
         class PlayerEquipEventSink final : public RE::BSTEventSink<RE::TESEquipEvent>
         {
         public:
@@ -442,18 +460,67 @@ namespace TFM::UI
             return best;
         }
 
+        [[nodiscard]] ImGui::ImVec2 ControllerStickForScreen()
+        {
+            const ImGui::ImVec2 raw{
+                controllerStickX.load(std::memory_order_acquire),
+                controllerStickY.load(std::memory_order_acquire)
+            };
+            if (raw.x != 0.0f || raw.y != 0.0f) {
+                return { raw.x, -raw.y };
+            }
+
+            return ImGui::GetKeyMagnitude2d(
+                ImGuiKey_GamepadLStickLeft,
+                ImGuiKey_GamepadLStickRight,
+                ImGuiKey_GamepadLStickUp,
+                ImGuiKey_GamepadLStickDown);
+        }
+
+        [[nodiscard]] std::optional<Direction> ControllerStickDirection()
+        {
+            const auto stick = ControllerStickForScreen();
+            const auto horizontal = std::abs(stick.x);
+            const auto vertical = std::abs(stick.y);
+            if (std::max(horizontal, vertical) < kControllerNavigationDeadzone) {
+                return std::nullopt;
+            }
+
+            if (horizontal >= vertical) {
+                return stick.x < 0.0f ? Direction::kLeft : Direction::kRight;
+            }
+            return stick.y < 0.0f ? Direction::kUp : Direction::kDown;
+        }
+
         [[nodiscard]] std::optional<Direction> PressedGamepadDirection()
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, true)) {
+            if (const auto direction = ControllerStickDirection()) {
+                if (direction != repeatedControllerDirection) {
+                    repeatedControllerDirection = direction;
+                    controllerDirectionRepeatTimer = kControllerNavigationInitialRepeatDelay;
+                    return direction;
+                }
+
+                controllerDirectionRepeatTimer -= std::clamp(ImGui::GetIO()->DeltaTime, 0.0f, 0.05f);
+                if (controllerDirectionRepeatTimer <= 0.0f) {
+                    controllerDirectionRepeatTimer += kControllerNavigationRepeatInterval;
+                    return direction;
+                }
+                return std::nullopt;
+            }
+
+            repeatedControllerDirection.reset();
+            controllerDirectionRepeatTimer = 0.0f;
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true)) {
                 return Direction::kLeft;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true)) {
                 return Direction::kRight;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickUp, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, true)) {
                 return Direction::kUp;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown, true)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, true)) {
                 return Direction::kDown;
             }
             return std::nullopt;
@@ -716,11 +783,7 @@ namespace TFM::UI
 
         void UpdateControllerDragPointer()
         {
-            auto stick = ImGui::GetKeyMagnitude2d(
-                ImGuiKey_GamepadLStickLeft,
-                ImGuiKey_GamepadLStickRight,
-                ImGuiKey_GamepadLStickUp,
-                ImGuiKey_GamepadLStickDown);
+            auto stick = ControllerStickForScreen();
             const auto magnitude = std::sqrt(stick.x * stick.x + stick.y * stick.y);
             if (magnitude > kControllerDragDeadzone) {
                 const auto normalizedMagnitude = std::clamp(
@@ -816,7 +879,9 @@ namespace TFM::UI
                 Close();
                 return;
             }
-            const auto dragButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+            const auto dragButtonPressed =
+                pendingControllerDragPress.exchange(false, std::memory_order_acq_rel) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
             const auto confirmButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
             if (dragState.controller) {
                 if (dragButtonPressed || confirmButtonPressed) {
@@ -824,7 +889,7 @@ namespace TFM::UI
                 }
                 return;
             }
-            if (controllerInputActive && dragButtonPressed) {
+            if (dragButtonPressed) {
                 StartControllerDrag(leaves);
                 return;
             }
@@ -1181,13 +1246,33 @@ namespace TFM::UI
 
         bool __stdcall ProcessInput(RE::InputEvent* event)
         {
-            const auto button = event ? event->AsButtonEvent() : nullptr;
+            if (!event || !window || !replacementAvailable.load(std::memory_order_acquire)) {
+                return false;
+            }
+
+            if (window->IsOpen && event->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                if (const auto thumbstick = event->AsThumbstickEvent(); thumbstick && thumbstick->IsLeft()) {
+                    controllerStickX.store(thumbstick->xValue, std::memory_order_release);
+                    controllerStickY.store(thumbstick->yValue, std::memory_order_release);
+                    return true;
+                }
+            }
+
+            const auto button = event->AsButtonEvent();
             const auto userEvents = RE::UserEvents::GetSingleton();
-            if (!button || !userEvents || !window || !replacementAvailable.load(std::memory_order_acquire)) {
+            if (!button || !userEvents) {
                 return false;
             }
 
             if (window->IsOpen) {
+                if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad &&
+                    button->GetIDCode() == static_cast<std::uint32_t>(RE::BSWin32GamepadDevice::Key::kY)) {
+                    if (button->IsDown()) {
+                        pendingControllerDragPress.store(true, std::memory_order_release);
+                    }
+                    return true;
+                }
+
                 const auto number = HotkeyNumber(button->QUserEvent(), *userEvents);
                 if (number > 0) {
                     if (button->IsDown()) {
@@ -1335,6 +1420,7 @@ namespace TFM::UI
                 });
         }
         dragState = {};
+        ResetControllerInput();
         postActivationRefreshFrames = 0;
         equipmentStateChanged.store(false, std::memory_order_release);
         pendingHotkey.store(0, std::memory_order_release);
@@ -1355,6 +1441,7 @@ namespace TFM::UI
         IconLayer::SetActive(false, false);
         PreviewCache::GetSingleton().SetVisible(false);
         dragState = {};
+        ResetControllerInput();
         centerCursorOnNextFrame = false;
         ResetLayoutAnimation();
         initialMeshRevealComplete = false;
