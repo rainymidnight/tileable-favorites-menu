@@ -16,7 +16,7 @@ namespace TFM::IconLayer
         constexpr auto kEquipLinkage = "EquipIcon"sv;
         constexpr auto kDearDiaryBackgroundSourceMarker = "deardiary"sv;
         constexpr auto kDefaultIconSource = "skyui/icons_item_psychosteve.swf"sv;
-        constexpr std::uint32_t kProbeTimeoutFrames = 120;
+        constexpr std::uint32_t kProbeTimeoutFrames = 15;
         constexpr std::uint32_t kFrameMinimumSettleFrames = 3;
         constexpr std::uint32_t kEquipLibraryDepth = 500000;
         constexpr float kIconLibrarySize = 128.0f;
@@ -332,33 +332,78 @@ namespace TFM::IconLayer
             });
         }
 
+        void LogMissingExpectedForms(
+            const std::vector<ItemKey>& expected,
+            const std::unordered_map<RE::FormID, Descriptor>& descriptors)
+        {
+            std::unordered_set<RE::FormID> logged;
+            logged.reserve(expected.size());
+            for (const auto& key : expected) {
+                if (descriptors.contains(key.formID) || !logged.insert(key.formID).second) {
+                    continue;
+                }
+
+                const auto form = RE::TESForm::LookupByID(key.formID);
+                if (!form) {
+                    logger::warn(
+                        "Missing favorite icon descriptor: runtimeFormID={:08X}, form lookup failed",
+                        key.formID);
+                    continue;
+                }
+
+                const auto name = form->GetName();
+                const auto definingFile = form->GetFile(0);
+                const auto lastOverride = form->GetFile();
+                const auto localFormID = definingFile ? form->GetLocalFormID() : form->GetFormID();
+                logger::warn(
+                    "Missing favorite icon descriptor: runtimeFormID={:08X}, localFormID={:08X}, "
+                    "name=\"{}\", definingPlugin=\"{}\", lastOverride=\"{}\"",
+                    form->GetFormID(),
+                    localFormID,
+                    name && name[0] != '\0' ? name : "<unnamed>",
+                    definingFile ? definingFile->GetFilename() : "<dynamic or unknown>",
+                    lastOverride ? lastOverride->GetFilename() : "<dynamic or unknown>");
+            }
+        }
+
         void FinishProbe(
             const std::vector<ItemKey>& expected,
             const ExtractedDescriptors& extracted,
             bool timedOut)
         {
+            bool accepted = false;
             auto& state = State();
             {
                 std::scoped_lock lock(state.mutex);
                 if (state.items != expected) {
                     state.restartProbe = true;
                 } else {
+                    accepted = true;
                     state.descriptors.clear();
+                    std::size_t resolvedCount = 0;
+                    std::size_t fallbackCount = 0;
                     for (const auto& key : expected) {
                         if (const auto found = extracted.byForm.find(key.formID); found != extracted.byForm.end()) {
                             state.descriptors.emplace(key, found->second);
+                            ++resolvedCount;
+                        } else if (timedOut) {
+                            Descriptor fallback;
+                            fallback.label = "default_misc";
+                            state.descriptors.emplace(key, std::move(fallback));
+                            ++fallbackCount;
                         }
                     }
                     state.loaded.clear();
                     state.failed.clear();
                     state.presentationReady = false;
                     ++state.descriptorRevision;
-                    state.phase = timedOut && state.descriptors.empty() ? "failed" : "ready";
+                    state.phase = "ready";
                     if (timedOut) {
                         state.error = std::format(
-                            "Favorites icon probe timed out ({} list entries, {} resolved icons)",
+                            "Favorites icon probe timed out ({} list entries, {} resolved icons, {} fallback icons)",
                             extracted.entryCount,
-                            state.descriptors.size());
+                            resolvedCount,
+                            fallbackCount);
                     } else {
                         state.error.clear();
                     }
@@ -369,6 +414,9 @@ namespace TFM::IconLayer
                 state.probeFrames = 0;
             }
 
+            if (timedOut && accepted) {
+                LogMissingExpectedForms(expected, extracted.byForm);
+            }
             if (const auto queue = RE::UIMessageQueue::GetSingleton()) {
                 queue->AddMessage(RE::FavoritesMenu::MENU_NAME.data(), RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
             }
