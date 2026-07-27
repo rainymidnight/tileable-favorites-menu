@@ -51,6 +51,13 @@ namespace TFM::UI
         std::atomic<float> controllerStickX{ 0.0f };
         std::atomic<float> controllerStickY{ 0.0f };
         std::atomic_bool pendingControllerDragPress{ false };
+        enum class ControllerEquipRequest : std::uint8_t
+        {
+            kNone,
+            kLeft,
+            kRight
+        };
+        std::atomic<ControllerEquipRequest> pendingControllerEquipRequest{ ControllerEquipRequest::kNone };
         std::optional<Direction> repeatedControllerDirection;
         float controllerDirectionRepeatTimer = 0.0f;
         bool initialMeshRevealComplete = false;
@@ -79,6 +86,7 @@ namespace TFM::UI
             controllerStickX.store(0.0f, std::memory_order_release);
             controllerStickY.store(0.0f, std::memory_order_release);
             pendingControllerDragPress.store(false, std::memory_order_release);
+            pendingControllerEquipRequest.store(ControllerEquipRequest::kNone, std::memory_order_release);
             repeatedControllerDirection.reset();
             controllerDirectionRepeatTimer = 0.0f;
         }
@@ -548,6 +556,21 @@ namespace TFM::UI
             return -1;
         }
 
+        [[nodiscard]] ControllerEquipRequest ControllerEquipRequestFor(
+            const RE::BSFixedString& userEvent,
+            const RE::UserEvents& userEvents)
+        {
+            // The replacement window normally receives gameplay-context events after the
+            // vanilla menu closes; Skyrim's item-menu actions are linked to these attack events.
+            if (userEvent == userEvents.leftEquip || userEvent == userEvents.leftAttack) {
+                return ControllerEquipRequest::kLeft;
+            }
+            if (userEvent == userEvents.rightEquip || userEvent == userEvents.rightAttack) {
+                return ControllerEquipRequest::kRight;
+            }
+            return ControllerEquipRequest::kNone;
+        }
+
         [[nodiscard]] ItemKey HotkeyTarget(const std::vector<LeafRect>& leaves)
         {
             const auto mouse = ImGui::GetIO()->MousePos;
@@ -883,6 +906,8 @@ namespace TFM::UI
                 pendingControllerDragPress.exchange(false, std::memory_order_acq_rel) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
             const auto confirmButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
+            const auto equipRequest =
+                pendingControllerEquipRequest.exchange(ControllerEquipRequest::kNone, std::memory_order_acq_rel);
             if (dragState.controller) {
                 if (dragButtonPressed || confirmButtonPressed) {
                     dragState.dropRequested = true;
@@ -901,10 +926,13 @@ namespace TFM::UI
             }
 
             if (confirmButtonPressed) {
-                Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kRight);
+                Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kDefault);
+                return;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false)) {
+            if (equipRequest == ControllerEquipRequest::kLeft) {
                 Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kLeft);
+            } else if (equipRequest == ControllerEquipRequest::kRight) {
+                Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kRight);
             }
         }
 
@@ -1271,6 +1299,16 @@ namespace TFM::UI
                         pendingControllerDragPress.store(true, std::memory_order_release);
                     }
                     return true;
+                }
+
+                if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                    const auto equipRequest = ControllerEquipRequestFor(button->QUserEvent(), *userEvents);
+                    if (equipRequest != ControllerEquipRequest::kNone) {
+                        if (button->IsDown()) {
+                            pendingControllerEquipRequest.store(equipRequest, std::memory_order_release);
+                        }
+                        return true;
+                    }
                 }
 
                 const auto number = HotkeyNumber(button->QUserEvent(), *userEvents);

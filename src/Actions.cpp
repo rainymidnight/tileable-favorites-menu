@@ -282,7 +282,14 @@ namespace TFM::Actions
             return false;
         }
 
-        if (item.form->GetFormType() == RE::FormType::Scroll) {
+        const auto formType = item.form->GetFormType();
+        if (hand == Hand::kDefault) {
+            hand = formType == RE::FormType::Spell || formType == RE::FormType::Scroll ?
+                Hand::kLeft :
+                Hand::kRight;
+        }
+
+        if (formType == RE::FormType::Scroll) {
             return ActivateBoundObject(*player, item, hand);
         }
         if (auto spell = item.form->As<RE::SpellItem>()) {

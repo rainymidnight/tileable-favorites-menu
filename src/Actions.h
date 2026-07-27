@@ -6,6 +6,7 @@ namespace TFM::Actions
 {
     enum class Hand
     {
+        kDefault,
         kRight,
         kLeft
     };
