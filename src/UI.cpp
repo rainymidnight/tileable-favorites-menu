@@ -442,6 +442,8 @@ namespace TFM::UI
 
             ItemKey best{};
             auto bestScore = std::numeric_limits<float>::max();
+            bool foundAligned = false;
+            const bool horizontal = direction == Direction::kLeft || direction == Direction::kRight;
             for (const auto& candidate : leaves) {
                 if (candidate.item == current) {
                     continue;
@@ -457,8 +459,23 @@ namespace TFM::UI
                     continue;
                 }
 
-                const auto primary = direction == Direction::kLeft || direction == Direction::kRight ? std::abs(dx) : std::abs(dy);
-                const auto secondary = direction == Direction::kLeft || direction == Direction::kRight ? std::abs(dy) : std::abs(dx);
+                const auto secondaryOverlap = horizontal ?
+                    std::min(source->rect.Bottom(), candidate.rect.Bottom()) -
+                        std::max(source->rect.y, candidate.rect.y) :
+                    std::min(source->rect.Right(), candidate.rect.Right()) -
+                        std::max(source->rect.x, candidate.rect.x);
+                const bool aligned = secondaryOverlap > 1.0f;
+                // Stay in the current row or column whenever possible; diagonals are a fallback.
+                if (aligned && !foundAligned) {
+                    foundAligned = true;
+                    best = {};
+                    bestScore = std::numeric_limits<float>::max();
+                } else if (!aligned && foundAligned) {
+                    continue;
+                }
+
+                const auto primary = horizontal ? std::abs(dx) : std::abs(dy);
+                const auto secondary = horizontal ? std::abs(dy) : std::abs(dx);
                 const auto score = primary + secondary * 0.45f;
                 if (score < bestScore) {
                     bestScore = score;
