@@ -1020,7 +1020,11 @@ namespace TFM::UI
             }
 
             if (dragState.controller) {
-                if (!std::exchange(dragState.dropRequested, false) || !dragState.target.IsValid()) {
+                if (!std::exchange(dragState.dropRequested, false)) {
+                    return false;
+                }
+                if (!dragState.target.IsValid()) {
+                    dragState = {};
                     return false;
                 }
                 const auto source = dragState.source;
