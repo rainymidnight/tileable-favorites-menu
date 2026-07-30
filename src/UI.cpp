@@ -588,6 +588,29 @@ namespace TFM::UI
             return ControllerEquipRequest::kNone;
         }
 
+        [[nodiscard]] bool IsCloseMenuInput(
+            const RE::ButtonEvent& button,
+            const RE::UserEvents& userEvents)
+        {
+            const auto userEvent = button.QUserEvent();
+            if (userEvent == userEvents.cancel ||
+                userEvent == userEvents.tweenMenu ||
+                userEvent == userEvents.pause) {
+                return true;
+            }
+
+            if (button.GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                const auto key = static_cast<RE::BSKeyboardDevice::Key>(button.GetIDCode());
+                return key == RE::BSKeyboardDevice::Key::kEscape ||
+                    key == RE::BSKeyboardDevice::Key::kTab;
+            }
+            if (button.GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                return button.GetIDCode() ==
+                    static_cast<std::uint32_t>(RE::BSWin32GamepadDevice::Key::kB);
+            }
+            return false;
+        }
+
         [[nodiscard]] ItemKey HotkeyTarget(const std::vector<LeafRect>& leaves)
         {
             const auto mouse = ImGui::GetIO()->MousePos;
@@ -913,12 +936,6 @@ namespace TFM::UI
 
         void HandleMenuInput(const std::vector<LeafRect>& leaves)
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-                ImGui::IsKeyPressed(ImGuiKey_Tab, false) ||
-                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-                Close();
-                return;
-            }
             const auto dragButtonPressed =
                 pendingControllerDragPress.exchange(false, std::memory_order_acq_rel) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
@@ -1310,6 +1327,13 @@ namespace TFM::UI
             }
 
             if (window->IsOpen) {
+                if (IsCloseMenuInput(*button, *userEvents)) {
+                    if (button->IsDown()) {
+                        Close();
+                    }
+                    return true;
+                }
+
                 if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad &&
                     button->GetIDCode() == static_cast<std::uint32_t>(RE::BSWin32GamepadDevice::Key::kY)) {
                     if (button->IsDown()) {
