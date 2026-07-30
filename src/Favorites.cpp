@@ -220,6 +220,8 @@ namespace TFM
             std::unordered_set<ItemKey, ItemKeyHash>& seen,
             RE::PlayerCharacter& player)
         {
+            const bool hideImportantFavorites =
+                GetModuleHandleW(L"DoubleFavoriteAsImportant.dll") != nullptr;
             auto inventory = player.GetInventory();
             for (auto& [object, data] : inventory) {
                 auto& entry = data.second;
@@ -230,10 +232,14 @@ namespace TFM
                 bool foundFavoriteList = false;
                 if (entry->extraLists) {
                     for (auto extraList : *entry->extraLists) {
-                        if (!extraList || !extraList->HasType<RE::ExtraHotkey>()) {
+                        const auto hotkey = extraList ? extraList->GetByType<RE::ExtraHotkey>() : nullptr;
+                        if (!hotkey) {
                             continue;
                         }
                         foundFavoriteList = true;
+                        if (hideImportantFavorites && hotkey->hotkey.underlying() == 0xFA) {
+                            continue;
+                        }
                         const ItemKey key{ object->GetFormID(), UniqueID(*extraList) };
                         if (!seen.insert(key).second) {
                             continue;
