@@ -132,6 +132,11 @@ namespace TFM::SettingsMenu
                 Config::SetCloseOnSelection(closeOnSelection);
             }
 
+            auto pauseGameWhileOpen = Config::Get().pauseGameWhileOpen;
+            if (ImGuiMCP::Checkbox("Pause game while menu is open", std::addressof(pauseGameWhileOpen))) {
+                Config::SetPauseGameWhileOpen(pauseGameWhileOpen);
+            }
+
             ImGuiMCP::Separator();
             if (ImGuiMCP::Button("Reset to defaults")) {
                 Config::ResetToDefaults();

@@ -37,6 +37,7 @@ namespace TFM::Config
 
     struct Settings
     {
+        bool pauseGameWhileOpen{ true };
         bool closeOnSelection{ false };
         PreviewMode previewMode{ PreviewMode::kIcons };
         TileStyle tileStyle{ TileStyle::kFramed };
@@ -52,6 +53,7 @@ namespace TFM::Config
 
     [[nodiscard]] const Settings& Get();
     void Load();
+    void SetPauseGameWhileOpen(bool enabled);
     void SetCloseOnSelection(bool enabled);
     void SetPreviewMode(PreviewMode mode);
     void UsePreviewModeForSession(PreviewMode mode);

@@ -115,6 +115,8 @@ namespace TFM::Config
 
     void Load()
     {
+        settings.pauseGameWhileOpen =
+            ReadBool(L"General", L"PauseGameWhileOpen", settings.pauseGameWhileOpen);
         settings.closeOnSelection = ReadBool(L"General", L"CloseOnSelection", settings.closeOnSelection);
         settings.previewMode = ReadPreviewMode(settings.previewMode);
         settings.tileStyle = ReadTileStyle(settings.tileStyle);
@@ -149,7 +151,8 @@ namespace TFM::Config
             kTextSizeMax);
 
         logger::info(
-            "Settings loaded (closeOnSelection={}, previewMode={}, tileStyle={}, meshPreview={}px, borderScale={:.2f}, frameScale={:.2f}, textSize={}px)",
+            "Settings loaded (pauseGameWhileOpen={}, closeOnSelection={}, previewMode={}, tileStyle={}, meshPreview={}px, borderScale={:.2f}, frameScale={:.2f}, textSize={}px)",
+            settings.pauseGameWhileOpen,
             settings.closeOnSelection,
             settings.previewMode == PreviewMode::kIcons ? "Icons" : "Meshes",
             settings.tileStyle == TileStyle::kMinimal ? "Minimal" : "Framed",
@@ -157,6 +160,20 @@ namespace TFM::Config
             settings.borderScale,
             settings.frameScale,
             settings.textSize);
+    }
+
+    void SetPauseGameWhileOpen(bool enabled)
+    {
+        if (settings.pauseGameWhileOpen == enabled) {
+            return;
+        }
+
+        settings.pauseGameWhileOpen = enabled;
+        PersistValue(
+            L"General",
+            L"PauseGameWhileOpen",
+            enabled ? L"1" : L"0",
+            "PauseGameWhileOpen");
     }
 
     void SetCloseOnSelection(bool enabled)
@@ -290,6 +307,7 @@ namespace TFM::Config
     {
         settings = Settings{};
 
+        PersistValue(L"General", L"PauseGameWhileOpen", L"1", "PauseGameWhileOpen");
         PersistValue(L"General", L"CloseOnSelection", L"0", "CloseOnSelection");
         PersistValue(L"Rendering", L"PreviewMode", L"Icons", "PreviewMode");
         const auto previewResolution = std::format(L"{}", settings.previewResolution);

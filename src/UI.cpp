@@ -19,6 +19,7 @@ namespace TFM::UI
     {
         SKSEMenuFramework::Model::WindowInterface* window = nullptr;
         std::unique_ptr<SKSEMenuFramework::Model::InputEvent> inputRegistration;
+        std::unique_ptr<SKSEMenuFramework::Model::Event> frameworkEventRegistration;
         std::unique_ptr<SKSEMenuFramework::Model::HudElement> meshPrewarmRegistration;
         ItemKey focusedItem{};
         struct DragState
@@ -36,6 +37,14 @@ namespace TFM::UI
             bool dropRequested{ false };
         };
         DragState dragState{};
+        struct PointerInputFrame
+        {
+            bool leftPressed{ false };
+            bool leftReleased{ false };
+            bool rightPressed{ false };
+            bool leftDown{ false };
+        };
+        PointerInputFrame pointerInput{};
         std::unordered_map<ItemKey, Rect, ItemKeyHash> animatedRects;
         bool favoritesButtonDown = false;
         bool registered = false;
@@ -51,6 +60,7 @@ namespace TFM::UI
         std::atomic<float> controllerStickX{ 0.0f };
         std::atomic<float> controllerStickY{ 0.0f };
         std::atomic_bool pendingControllerDragPress{ false };
+        std::atomic_bool pendingControllerConfirmPress{ false };
         enum class ControllerEquipRequest : std::uint8_t
         {
             kNone,
@@ -60,6 +70,9 @@ namespace TFM::UI
         std::atomic<ControllerEquipRequest> pendingControllerEquipRequest{ ControllerEquipRequest::kNone };
         std::optional<Direction> repeatedControllerDirection;
         float controllerDirectionRepeatTimer = 0.0f;
+        bool nonBlockingInputFrame = false;
+        bool previousMouseLeftDown = false;
+        bool previousMouseRightDown = false;
         bool initialMeshRevealComplete = false;
         bool incrementalMeshRevealAllowed = false;
         bool meshPrewarmReady = false;
@@ -86,9 +99,14 @@ namespace TFM::UI
             controllerStickX.store(0.0f, std::memory_order_release);
             controllerStickY.store(0.0f, std::memory_order_release);
             pendingControllerDragPress.store(false, std::memory_order_release);
+            pendingControllerConfirmPress.store(false, std::memory_order_release);
             pendingControllerEquipRequest.store(ControllerEquipRequest::kNone, std::memory_order_release);
             repeatedControllerDirection.reset();
             controllerDirectionRepeatTimer = 0.0f;
+            pointerInput = {};
+            nonBlockingInputFrame = false;
+            previousMouseLeftDown = false;
+            previousMouseRightDown = false;
         }
 
         class PlayerEquipEventSink final : public RE::BSTEventSink<RE::TESEquipEvent>
@@ -485,6 +503,101 @@ namespace TFM::UI
             return best;
         }
 
+        [[nodiscard]] bool UsesNonBlockingInput()
+        {
+            return window &&
+                window->IsOpen.load(std::memory_order_acquire) &&
+                !window->BlockUserInput.load(std::memory_order_acquire) &&
+                !SKSEMenuFramework::IsAnyBlockingWindowOpened();
+        }
+
+        void BeginInputFrame()
+        {
+            nonBlockingInputFrame = UsesNonBlockingInput();
+            if (!nonBlockingInputFrame) {
+                pointerInput = {};
+                previousMouseLeftDown = false;
+                previousMouseRightDown = false;
+                return;
+            }
+
+            const auto leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            const auto rightDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+            pointerInput = {
+                .leftPressed = leftDown && !previousMouseLeftDown,
+                .leftReleased = !leftDown && previousMouseLeftDown,
+                .rightPressed = rightDown && !previousMouseRightDown,
+                .leftDown = leftDown
+            };
+            previousMouseLeftDown = leftDown;
+            previousMouseRightDown = rightDown;
+        }
+
+        void __stdcall HandleFrameworkEvent(SKSEMenuFramework::Model::EventType eventType)
+        {
+            if (eventType == SKSEMenuFramework::Model::EventType::kBeforeRender &&
+                UsesNonBlockingInput()) {
+                ImGui::GetIO()->ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+            }
+        }
+
+        [[nodiscard]] bool HandleNonBlockingControllerButton(const RE::ButtonEvent& button)
+        {
+            if (button.GetDevice() != RE::INPUT_DEVICE::kGamepad) {
+                return false;
+            }
+
+            const auto pressed = button.IsPressed();
+            switch (static_cast<RE::BSWin32GamepadDevice::Key>(button.GetIDCode())) {
+            case RE::BSWin32GamepadDevice::Key::kLeft:
+                controllerStickX.store(pressed ? -1.0f : 0.0f, std::memory_order_release);
+                return true;
+            case RE::BSWin32GamepadDevice::Key::kRight:
+                controllerStickX.store(pressed ? 1.0f : 0.0f, std::memory_order_release);
+                return true;
+            case RE::BSWin32GamepadDevice::Key::kUp:
+                controllerStickY.store(pressed ? 1.0f : 0.0f, std::memory_order_release);
+                return true;
+            case RE::BSWin32GamepadDevice::Key::kDown:
+                controllerStickY.store(pressed ? -1.0f : 0.0f, std::memory_order_release);
+                return true;
+            case RE::BSWin32GamepadDevice::Key::kA:
+                if (button.IsDown()) {
+                    pendingControllerConfirmPress.store(true, std::memory_order_release);
+                }
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        [[nodiscard]] bool IsGameplayPassthroughInput(
+            const RE::ButtonEvent& button,
+            const RE::UserEvents& userEvents)
+        {
+            if (button.GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
+                return false;
+            }
+
+            const auto userEvent = button.QUserEvent();
+            if (userEvent == userEvents.forward ||
+                userEvent == userEvents.back ||
+                userEvent == userEvents.strafeLeft ||
+                userEvent == userEvents.strafeRight ||
+                userEvent == userEvents.move ||
+                userEvent == userEvents.run ||
+                userEvent == userEvents.toggleRun ||
+                userEvent == userEvents.autoMove ||
+                userEvent == userEvents.sprint ||
+                userEvent == userEvents.sprintStart ||
+                userEvent == userEvents.sprintStop) {
+                return true;
+            }
+
+            return static_cast<RE::BSKeyboardDevice::Key>(button.GetIDCode()) ==
+                RE::BSKeyboardDevice::Key::kPrintScreen;
+        }
+
         [[nodiscard]] ImGui::ImVec2 ControllerStickForScreen()
         {
             const ImGui::ImVec2 raw{
@@ -536,6 +649,9 @@ namespace TFM::UI
 
             repeatedControllerDirection.reset();
             controllerDirectionRepeatTimer = 0.0f;
+            if (nonBlockingInputFrame) {
+                return std::nullopt;
+            }
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true)) {
                 return Direction::kLeft;
             }
@@ -879,7 +995,11 @@ namespace TFM::UI
                 dragState.pointerPosition = ImGui::GetIO()->MousePos;
             }
             const auto pointer = dragState.pointerPosition;
-            if (!dragState.controller && !dragState.active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const auto leftDown =
+                nonBlockingInputFrame ? pointerInput.leftDown : ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            const auto leftReleased =
+                nonBlockingInputFrame ? pointerInput.leftReleased : ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+            if (!dragState.controller && !dragState.active && leftDown) {
                 const auto dx = pointer.x - dragState.pressPosition.x;
                 const auto dy = pointer.y - dragState.pressPosition.y;
                 dragState.active = dx * dx + dy * dy >= kDragThreshold * kDragThreshold;
@@ -914,7 +1034,7 @@ namespace TFM::UI
                 return true;
             }
 
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (leftReleased) {
                 const auto source = dragState.source;
                 const auto target = dragState.target;
                 const auto position = dragState.position;
@@ -928,7 +1048,7 @@ namespace TFM::UI
                 } else {
                     Activate(Favorites::GetSingleton().Find(source), Actions::Hand::kRight);
                 }
-            } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            } else if (!leftDown) {
                 dragState = {};
             }
             return false;
@@ -939,7 +1059,9 @@ namespace TFM::UI
             const auto dragButtonPressed =
                 pendingControllerDragPress.exchange(false, std::memory_order_acq_rel) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
-            const auto confirmButtonPressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
+            const auto confirmButtonPressed =
+                pendingControllerConfirmPress.exchange(false, std::memory_order_acq_rel) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
             const auto equipRequest =
                 pendingControllerEquipRequest.exchange(ControllerEquipRequest::kNone, std::memory_order_acq_rel);
             if (dragState.controller) {
@@ -1059,7 +1181,12 @@ namespace TFM::UI
             static_cast<void>(ImGui::InvisibleButton(
                 buttonID.c_str(),
                 { tile.leaf.rect.width, tile.leaf.rect.height }));
-            if (!dragState.source.IsValid() && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left, false)) {
+            const auto hovered = nonBlockingInputFrame ? tile.hovered : ImGui::IsItemHovered();
+            const auto leftPressed =
+                nonBlockingInputFrame ? pointerInput.leftPressed : ImGui::IsMouseClicked(ImGuiMouseButton_Left, false);
+            const auto rightPressed =
+                nonBlockingInputFrame ? pointerInput.rightPressed : ImGui::IsMouseClicked(ImGuiMouseButton_Right, false);
+            if (!dragState.source.IsValid() && hovered && leftPressed) {
                 focusedItem = item.key;
                 dragState.source = item.key;
                 dragState.sourceRect = tile.leaf.rect;
@@ -1070,7 +1197,7 @@ namespace TFM::UI
                     dragState.pressPosition.y - tile.leaf.rect.y
                 };
             }
-            if (!dragState.active && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right, false)) {
+            if (!dragState.active && hovered && rightPressed) {
                 focusedItem = item.key;
                 Activate(std::addressof(item), Actions::Hand::kLeft);
             }
@@ -1182,6 +1309,7 @@ namespace TFM::UI
                 return;
             }
 
+            BeginInputFrame();
             UpdateControllerInputMode();
             const bool equipEventReceived = equipmentStateChanged.exchange(false, std::memory_order_acq_rel);
             const bool postActivationRefresh = postActivationRefreshFrames > 0;
@@ -1312,12 +1440,23 @@ namespace TFM::UI
                 return false;
             }
 
-            if (window->IsOpen && event->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+            const auto menuOpen = window->IsOpen.load(std::memory_order_acquire);
+            const auto nonBlockingInput = menuOpen && UsesNonBlockingInput();
+            if (menuOpen && event->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
                 if (const auto thumbstick = event->AsThumbstickEvent(); thumbstick && thumbstick->IsLeft()) {
+                    if (nonBlockingInput) {
+                        return false;
+                    }
                     controllerStickX.store(thumbstick->xValue, std::memory_order_release);
                     controllerStickY.store(thumbstick->yValue, std::memory_order_release);
                     return true;
                 }
+            }
+            if (nonBlockingInput && event->AsMouseMoveEvent()) {
+                return true;
+            }
+            if (nonBlockingInput && event->AsCharEvent()) {
+                return true;
             }
 
             const auto button = event->AsButtonEvent();
@@ -1326,11 +1465,15 @@ namespace TFM::UI
                 return false;
             }
 
-            if (window->IsOpen) {
+            if (menuOpen) {
                 if (IsCloseMenuInput(*button, *userEvents)) {
                     if (button->IsDown()) {
                         Close();
                     }
+                    return true;
+                }
+
+                if (nonBlockingInput && button->GetDevice() == RE::INPUT_DEVICE::kMouse) {
                     return true;
                 }
 
@@ -1339,6 +1482,12 @@ namespace TFM::UI
                     if (button->IsDown()) {
                         pendingControllerDragPress.store(true, std::memory_order_release);
                     }
+                    return true;
+                }
+
+                if (nonBlockingInput &&
+                    button->QUserEvent() != userEvents->favorites &&
+                    HandleNonBlockingControllerButton(*button)) {
                     return true;
                 }
 
@@ -1359,6 +1508,15 @@ namespace TFM::UI
                         pendingHotkey.store(number, std::memory_order_release);
                     }
                     return true;
+                }
+
+                if (nonBlockingInput && button->QUserEvent() != userEvents->favorites) {
+                    if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad) {
+                        return true;
+                    }
+                    if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                        return !IsGameplayPassthroughInput(*button, *userEvents);
+                    }
                 }
             }
 
@@ -1456,12 +1614,13 @@ namespace TFM::UI
             return false;
         }
 
-        window = SKSEMenuFramework::AddWindow(Render, true);
+        window = SKSEMenuFramework::AddWindow(Render, Config::Get().pauseGameWhileOpen);
         if (!window) {
             logger::error("SKSE Menu Framework rejected the tileable favorites window; vanilla fallback remains active");
             return false;
         }
         inputRegistration.reset(SKSEMenuFramework::AddInputEvent(ProcessInput));
+        frameworkEventRegistration.reset(SKSEMenuFramework::AddEvent(HandleFrameworkEvent, 0.0f));
         meshPrewarmRegistration.reset(SKSEMenuFramework::AddHudElement(PrewarmMeshes));
         if (const auto skyrimUI = RE::UI::GetSingleton()) {
             skyrimUI->AddEventSink<RE::MenuOpenCloseEvent>(std::addressof(VanillaMenuSink::GetSingleton()));
@@ -1479,6 +1638,7 @@ namespace TFM::UI
         if (!window || !replacementAvailable.load(std::memory_order_acquire)) {
             return;
         }
+        window->BlockUserInput.store(Config::Get().pauseGameWhileOpen, std::memory_order_release);
         const auto wasOpen = window->IsOpen.load();
         if (!wasOpen) {
             ResetLayoutAnimation();
