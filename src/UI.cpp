@@ -50,6 +50,13 @@ namespace TFM::UI
         bool registered = false;
         bool nativeBlurActive = false;
         bool controllerInputActive = false;
+        enum class ActiveInputDevice : std::uint8_t
+        {
+            kUnknown,
+            kKeyboardMouse,
+            kController
+        };
+        std::atomic<ActiveInputDevice> activeInputDevice{ ActiveInputDevice::kUnknown };
         bool centerCursorOnNextFrame = false;
         std::uint8_t scaleformCursorRequestCooldown = 0;
         std::atomic_bool replacementAvailable{ false };
@@ -60,7 +67,16 @@ namespace TFM::UI
         std::atomic<float> controllerStickX{ 0.0f };
         std::atomic<float> controllerStickY{ 0.0f };
         std::atomic_bool pendingControllerDragPress{ false };
+        std::atomic_bool pendingControllerDragRelease{ false };
         std::atomic_bool pendingControllerConfirmPress{ false };
+        enum class ControllerAction : std::uint8_t
+        {
+            kNone,
+            kConfirm,
+            kCancel,
+            kDrag,
+            kSuppressWindowing
+        };
         enum class ControllerEquipRequest : std::uint8_t
         {
             kNone,
@@ -83,6 +99,7 @@ namespace TFM::UI
         constexpr float kDragThreshold = 10.0f;
         constexpr float kControllerDragDeadzone = 0.2f;
         constexpr float kControllerDragSpeed = 0.75f;
+        constexpr float kControllerActivationDeadzone = 0.2f;
         constexpr float kControllerNavigationDeadzone = 0.5f;
         constexpr float kControllerNavigationInitialRepeatDelay = 0.3f;
         constexpr float kControllerNavigationRepeatInterval = 0.1f;
@@ -99,6 +116,7 @@ namespace TFM::UI
             controllerStickX.store(0.0f, std::memory_order_release);
             controllerStickY.store(0.0f, std::memory_order_release);
             pendingControllerDragPress.store(false, std::memory_order_release);
+            pendingControllerDragRelease.store(false, std::memory_order_release);
             pendingControllerConfirmPress.store(false, std::memory_order_release);
             pendingControllerEquipRequest.store(ControllerEquipRequest::kNone, std::memory_order_release);
             repeatedControllerDirection.reset();
@@ -541,33 +559,51 @@ namespace TFM::UI
             }
         }
 
-        [[nodiscard]] bool HandleNonBlockingControllerButton(const RE::ButtonEvent& button)
+        [[nodiscard]] ControllerAction ResolveControllerAction(
+            const RE::ButtonEvent& button,
+            const RE::UserEvents& userEvents)
         {
             if (button.GetDevice() != RE::INPUT_DEVICE::kGamepad) {
-                return false;
+                return ControllerAction::kNone;
             }
 
-            const auto pressed = button.IsPressed();
-            switch (static_cast<RE::BSWin32GamepadDevice::Key>(button.GetIDCode())) {
-            case RE::BSWin32GamepadDevice::Key::kLeft:
-                controllerStickX.store(pressed ? -1.0f : 0.0f, std::memory_order_release);
-                return true;
-            case RE::BSWin32GamepadDevice::Key::kRight:
-                controllerStickX.store(pressed ? 1.0f : 0.0f, std::memory_order_release);
-                return true;
-            case RE::BSWin32GamepadDevice::Key::kUp:
-                controllerStickY.store(pressed ? 1.0f : 0.0f, std::memory_order_release);
-                return true;
-            case RE::BSWin32GamepadDevice::Key::kDown:
-                controllerStickY.store(pressed ? -1.0f : 0.0f, std::memory_order_release);
-                return true;
-            case RE::BSWin32GamepadDevice::Key::kA:
-                if (button.IsDown()) {
-                    pendingControllerConfirmPress.store(true, std::memory_order_release);
+            const auto userEvent = button.QUserEvent();
+            if (userEvent == userEvents.accept || userEvent == userEvents.activate) {
+                return ControllerAction::kConfirm;
+            }
+            if (userEvent == userEvents.cancel ||
+                userEvent == userEvents.tweenMenu ||
+                userEvent == userEvents.pause) {
+                return ControllerAction::kCancel;
+            }
+
+            const auto controlMap = RE::ControlMap::GetSingleton();
+            if (controlMap && controlMap->GetGamePadType() == RE::PC_GAMEPAD_TYPE::kOrbis) {
+                switch (static_cast<RE::BSPCOrbisGamepadDevice::Key>(button.GetIDCode())) {
+                case RE::BSPCOrbisGamepadDevice::Key::kPS3_A:
+                    return ControllerAction::kConfirm;
+                case RE::BSPCOrbisGamepadDevice::Key::kPS3_B:
+                    return ControllerAction::kCancel;
+                case RE::BSPCOrbisGamepadDevice::Key::kPS3_X:
+                    return ControllerAction::kSuppressWindowing;
+                case RE::BSPCOrbisGamepadDevice::Key::kPS3_Y:
+                    return ControllerAction::kDrag;
+                default:
+                    return ControllerAction::kNone;
                 }
-                return true;
+            }
+
+            switch (static_cast<RE::BSWin32GamepadDevice::Key>(button.GetIDCode())) {
+            case RE::BSWin32GamepadDevice::Key::kA:
+                return ControllerAction::kConfirm;
+            case RE::BSWin32GamepadDevice::Key::kB:
+                return ControllerAction::kCancel;
+            case RE::BSWin32GamepadDevice::Key::kX:
+                return ControllerAction::kSuppressWindowing;
+            case RE::BSWin32GamepadDevice::Key::kY:
+                return ControllerAction::kDrag;
             default:
-                return false;
+                return ControllerAction::kNone;
             }
         }
 
@@ -649,21 +685,6 @@ namespace TFM::UI
 
             repeatedControllerDirection.reset();
             controllerDirectionRepeatTimer = 0.0f;
-            if (nonBlockingInputFrame) {
-                return std::nullopt;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true)) {
-                return Direction::kLeft;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true)) {
-                return Direction::kRight;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, true)) {
-                return Direction::kUp;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, true)) {
-                return Direction::kDown;
-            }
             return std::nullopt;
         }
 
@@ -721,8 +742,7 @@ namespace TFM::UI
                     key == RE::BSKeyboardDevice::Key::kTab;
             }
             if (button.GetDevice() == RE::INPUT_DEVICE::kGamepad) {
-                return button.GetIDCode() ==
-                    static_cast<std::uint32_t>(RE::BSWin32GamepadDevice::Key::kB);
+                return ResolveControllerAction(button, userEvents) == ControllerAction::kCancel;
             }
             return false;
         }
@@ -1060,22 +1080,24 @@ namespace TFM::UI
 
         void HandleMenuInput(const std::vector<LeafRect>& leaves)
         {
-            const auto dragButtonPressed =
-                pendingControllerDragPress.exchange(false, std::memory_order_acq_rel) ||
-                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+            const auto dragButtonPressed = pendingControllerDragPress.exchange(false, std::memory_order_acq_rel);
+            const auto dragButtonReleased = pendingControllerDragRelease.exchange(false, std::memory_order_acq_rel);
             const auto confirmButtonPressed =
                 pendingControllerConfirmPress.exchange(false, std::memory_order_acq_rel) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false);
             const auto equipRequest =
                 pendingControllerEquipRequest.exchange(ControllerEquipRequest::kNone, std::memory_order_acq_rel);
             if (dragState.controller) {
-                if (dragButtonPressed || confirmButtonPressed) {
+                if (dragButtonReleased || confirmButtonPressed) {
                     dragState.dropRequested = true;
                 }
                 return;
             }
             if (dragButtonPressed) {
                 StartControllerDrag(leaves);
+                if (dragState.controller && dragButtonReleased) {
+                    dragState.dropRequested = true;
+                }
                 return;
             }
             if (const auto direction = PressedGamepadDirection()) {
@@ -1243,8 +1265,44 @@ namespace TFM::UI
             }
         }
 
+        void ObserveInputEvent(const RE::InputEvent& event)
+        {
+            if (const auto button = event.AsButtonEvent(); button && !button->IsDown()) {
+                return;
+            }
+
+            switch (event.GetDevice()) {
+            case RE::INPUT_DEVICE::kKeyboard:
+            case RE::INPUT_DEVICE::kMouse:
+                activeInputDevice.store(ActiveInputDevice::kKeyboardMouse, std::memory_order_release);
+                break;
+            case RE::INPUT_DEVICE::kGamepad:
+                if (const auto thumbstick = event.AsThumbstickEvent(); thumbstick) {
+                    const auto magnitude = std::sqrt(
+                        thumbstick->xValue * thumbstick->xValue +
+                        thumbstick->yValue * thumbstick->yValue);
+                    if (magnitude < kControllerActivationDeadzone) {
+                        return;
+                    }
+                }
+                activeInputDevice.store(ActiveInputDevice::kController, std::memory_order_release);
+                break;
+            default:
+                break;
+            }
+        }
+
         [[nodiscard]] bool IsControllerActive()
         {
+            switch (activeInputDevice.load(std::memory_order_acquire)) {
+            case ActiveInputDevice::kKeyboardMouse:
+                return false;
+            case ActiveInputDevice::kController:
+                return true;
+            case ActiveInputDevice::kUnknown:
+                break;
+            }
+
             const auto inputManager = RE::BSInputDeviceManager::GetSingleton();
             return inputManager && inputManager->IsGamepadEnabled();
         }
@@ -1440,7 +1498,11 @@ namespace TFM::UI
 
         bool __stdcall ProcessInput(RE::InputEvent* event)
         {
-            if (!event || !window || !replacementAvailable.load(std::memory_order_acquire)) {
+            if (!event) {
+                return false;
+            }
+            ObserveInputEvent(*event);
+            if (!window || !replacementAvailable.load(std::memory_order_acquire)) {
                 return false;
             }
 
@@ -1481,17 +1543,21 @@ namespace TFM::UI
                     return true;
                 }
 
-                if (button->GetDevice() == RE::INPUT_DEVICE::kGamepad &&
-                    button->GetIDCode() == static_cast<std::uint32_t>(RE::BSWin32GamepadDevice::Key::kY)) {
+                const auto controllerAction = ResolveControllerAction(*button, *userEvents);
+                if (controllerAction == ControllerAction::kDrag) {
                     if (button->IsDown()) {
                         pendingControllerDragPress.store(true, std::memory_order_release);
+                    } else if (button->IsUp()) {
+                        pendingControllerDragRelease.store(true, std::memory_order_release);
                     }
                     return true;
                 }
 
-                if (nonBlockingInput &&
-                    button->QUserEvent() != userEvents->favorites &&
-                    HandleNonBlockingControllerButton(*button)) {
+                if (button->QUserEvent() != userEvents->favorites &&
+                    controllerAction == ControllerAction::kConfirm) {
+                    if (button->IsDown()) {
+                        pendingControllerConfirmPress.store(true, std::memory_order_release);
+                    }
                     return true;
                 }
 
@@ -1511,6 +1577,10 @@ namespace TFM::UI
                         pendingHotkeyTarget.store(inputHotkeyTarget.load(std::memory_order_acquire), std::memory_order_release);
                         pendingHotkey.store(number, std::memory_order_release);
                     }
+                    return true;
+                }
+
+                if (controllerAction == ControllerAction::kSuppressWindowing) {
                     return true;
                 }
 
