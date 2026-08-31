@@ -20,14 +20,14 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 include(FetchContent)
 FetchContent_Declare(
-    CommonLibVR
-    GIT_REPOSITORY https://github.com/alandtse/CommonLibVR.git
-    GIT_TAG bebf622adb93624a53a5b39bba410565d832b15e # v4.35.2
+    CommonLibSSE
+    GIT_REPOSITORY https://github.com/alandtse/CommonLibSSE-NG.git
+    GIT_TAG 2fcadbdf5e7fe65580ca5848d6604e5b88fab03b # v6.6.3
     GIT_SHALLOW FALSE
     GIT_SUBMODULES extern/openvr
     GIT_SUBMODULES_RECURSE TRUE
 )
-FetchContent_MakeAvailable(CommonLibVR)
+FetchContent_MakeAvailable(CommonLibSSE)
 
 get_target_property(COMMONLIB_SRC_DIR CommonLibSSE SOURCE_DIR)
 include("${COMMONLIB_SRC_DIR}/cmake/CommonLibSSE.cmake")
