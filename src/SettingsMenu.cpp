@@ -9,6 +9,10 @@ namespace TFM::SettingsMenu
 {
     namespace
     {
+        constexpr auto kMeshPreviewWarningPopup = "Enable 3D mesh previews?";
+        constexpr auto kMeshPreviewWarningText =
+            "3D mesh previews can currently cause game freezes during opening the menu and visual bugs in some load orders. Continue using 3D mesh previews?";
+
         void __stdcall Render()
         {
             constexpr std::array previewModes{
@@ -23,10 +27,35 @@ namespace TFM::SettingsMenu
                     std::addressof(selected),
                     previewModes.data(),
                     static_cast<int>(previewModes.size()))) {
-                Config::SetPreviewMode(selected == 0 ? Config::PreviewMode::kIcons : Config::PreviewMode::kMeshes);
-                UI::ApplyPreviewSettings();
+                if (selected == 0) {
+                    Config::SetPreviewMode(Config::PreviewMode::kIcons);
+                    UI::ApplyPreviewSettings();
+                } else {
+                    ImGuiMCP::OpenPopup(kMeshPreviewWarningPopup);
+                }
             }
             ImGuiMCP::EndDisabled();
+
+            ImGuiMCP::SetNextWindowSize({ 520.0f, 0.0f }, ImGuiMCP::ImGuiCond_Appearing);
+            if (ImGuiMCP::BeginPopupModal(
+                    kMeshPreviewWarningPopup,
+                    nullptr,
+                    ImGuiMCP::ImGuiWindowFlags_NoResize | ImGuiMCP::ImGuiWindowFlags_NoSavedSettings)) {
+                ImGuiMCP::TextWrapped("%s", kMeshPreviewWarningText);
+                ImGuiMCP::Spacing();
+
+                if (ImGuiMCP::Button("Accept", { 120.0f, 0.0f })) {
+                    Config::SetPreviewMode(Config::PreviewMode::kMeshes);
+                    UI::ApplyPreviewSettings();
+                    ImGuiMCP::CloseCurrentPopup();
+                }
+
+                ImGuiMCP::SameLine();
+                if (ImGuiMCP::Button("Cancel", { 120.0f, 0.0f })) {
+                    ImGuiMCP::CloseCurrentPopup();
+                }
+                ImGuiMCP::EndPopup();
+            }
 
             if (meshesAvailable) {
                 ImGuiMCP::BeginDisabled(Config::Get().previewMode != Config::PreviewMode::kMeshes);
@@ -56,7 +85,6 @@ namespace TFM::SettingsMenu
                 Config::SetTileStyle(tileStyle == 0 ? Config::TileStyle::kFramed : Config::TileStyle::kMinimal);
             }
 
-            ImGuiMCP::Separator();
             auto borderPercent = Config::Get().borderScale * 100.0f;
             if (ImGuiMCP::SliderFloat(
                     "Tile border size",
@@ -137,7 +165,6 @@ namespace TFM::SettingsMenu
                 Config::SetPauseGameWhileOpen(pauseGameWhileOpen);
             }
 
-            ImGuiMCP::Separator();
             if (ImGuiMCP::Button("Reset to defaults")) {
                 Config::ResetToDefaults();
                 UI::ApplyPreviewSettings();
